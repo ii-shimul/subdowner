@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools >= 68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "subdowner"
+dynamic = ["version"]
+description = "GTK4/Libadwaita subtitle search & download tool"
+readme = "README.md"
+license = "MIT"
+requires-python = ">= 3.10"
+authors = [
+    { name = "SubDowner Contributors" },
+]
+keywords = ["subtitles", "gtk4", "libadwaita", "opensubtitles", "subliminal"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: X11 Applications :: GTK",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Video",
+]
+
+dependencies = [
+    "requests >= 2.28",
+]
+
+[project.optional-dependencies]
+full = [
+    "subliminal >= 2.2",
+    "chardet >= 5.0",
+]
+dev = [
+    "ruff",
+    "mypy",
+]
+
+[project.urls]
+Homepage = "https://github.com/ii-shimul/subdowner"
+Issues   = "https://github.com/ii-shimul/subdowner/issues"
+
+[project.gui-scripts]
+subdowner = "subdowner.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "subdowner.__version__"}
+
+[tool.ruff]
+target-version = "py310"
+line-length = 99
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_configs = true

@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.subdowner</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>SubDowner</name>
+  <summary>Search and download subtitles for movies and TV series</summary>
+
+  <description>
+    <p>
+      SubDowner is a modern GTK4/Libadwaita application that searches for
+      subtitles using the OpenSubtitles REST API and subliminal library.
+      Results from multiple providers are merged, scored, and deduplicated
+      so you always get the best match.
+    </p>
+    <p>Features include:</p>
+    <ul>
+      <li>Hybrid search across OpenSubtitles and subliminal providers</li>
+      <li>Multi-language support with 21 languages</li>
+      <li>Drag-and-drop video files for hash-based matching</li>
+      <li>"I'm Feeling Lucky" one-click download</li>
+      <li>Configurable download directory and hearing-impaired filter</li>
+      <li>Automatic encoding normalization to UTF-8</li>
+      <li>Search history and keyboard shortcuts</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.github.subdowner.desktop</launchable>
+
+  <url type="homepage">https://github.com/ii-shimul/subdowner</url>
+  <url type="bugtracker">https://github.com/ii-shimul/subdowner/issues</url>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="1.0.0" date="2026-02-19">
+      <description>
+        <p>Major release with restructured codebase, pagination, drag-and-drop,
+        search history, keyboard shortcuts, and encoding normalization.</p>
+      </description>
+    </release>
+  </releases>
+
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+</component>

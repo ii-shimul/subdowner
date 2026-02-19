@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=SubDowner
+Comment=Search and download subtitles for movies and TV series
+Exec=subdowner
+Icon=io.github.subdowner
+Terminal=false
+Type=Application
+Categories=AudioVideo;Video;Utility;
+Keywords=subtitle;srt;download;movie;series;
+StartupNotify=true
+MimeType=video/x-matroska;video/mp4;video/x-msvideo;video/quicktime;
