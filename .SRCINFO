@@ -15,6 +15,7 @@ pkgbase = subdowner
 	depends = libadwaita
 	depends = python-requests
 	depends = python-chardet
+	depends = python-guessit
 	source = subdowner-1.1.0.tar.gz::https://github.com/ii-shimul/subdowner/archive/v1.1.0.tar.gz
 	sha256sums = d717007d2b5cc619d82a2d4dcbd3ad7c1c512f1a11a16401594fa9ef7f08d484
 

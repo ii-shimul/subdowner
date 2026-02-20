@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 from .backend import (
     download_gestdown,
     download_opensubtitles,
+    parse_video_filename,
     search_gestdown,
     search_opensubtitles,
 )
@@ -56,6 +57,7 @@ class SubDownerWindow(Adw.ApplicationWindow):
         self._os_page = 1
         self._os_total_pages = 1
         self._video_path: str | None = None
+        self._video_info: dict | None = None  # guessit-parsed metadata
         self._visible_count = 0       # how many result rows are shown so far
         self._PAGE_SIZE = 20
         self._last_download: str | None = None
@@ -336,8 +338,23 @@ class SubDownerWindow(Adw.ApplicationWindow):
             return False
 
         self._video_path = path
-        self.search_entry.set_text(Path(path).stem)
-        self._toast(f"Video loaded: {Path(path).name}")
+        info = parse_video_filename(Path(path).name)
+        self._video_info = info
+
+        # Build a human-friendly query from the parsed metadata.
+        title = info.get("title", Path(path).stem)
+        parts = [title]
+        if "season" in info:
+            parts.append(f"S{info['season']:02d}")
+            if "episode" in info:
+                # Replace last part with combined SxxExx.
+                parts[-1] += f"E{info['episode']:02d}"
+        elif "year" in info:
+            parts.append(str(info["year"]))
+
+        display = " ".join(parts)
+        self.search_entry.set_text(display)
+        self._toast(f"Parsed: {display}")
         self._on_search(None)
         return True
 
@@ -364,6 +381,13 @@ class SubDownerWindow(Adw.ApplicationWindow):
         save_config(self.config)
         self._push_history(query)
 
+        # If user typed manually (not from drag-and-drop), try parsing
+        # the query itself in case it looks like a filename.
+        if self._video_info is None:
+            info = parse_video_filename(query)
+            if info.get("title"):
+                self._video_info = info
+
         self._set_busy(True)
         self._clear_results()
 
@@ -374,20 +398,35 @@ class SubDownerWindow(Adw.ApplicationWindow):
         self._os_page = 1
         self._os_total_pages = 1
 
+        vi = self._video_info
+        self._video_info = None   # consumed — reset for the next search
+
         threading.Thread(
-            target=self._search_worker, args=(query, langs, gen), daemon=True
+            target=self._search_worker, args=(query, langs, gen, vi), daemon=True
         ).start()
 
-    def _search_worker(self, query: str, langs: list[str], gen: int):
+    def _search_worker(
+        self, query: str, langs: list[str], gen: int, vi: dict | None
+    ):
         """Run both backends in the current (non-UI) thread."""
         results: list[SubResult] = []
         errors: list[str] = []
+
+        # Extract season/episode from guessit metadata when available.
+        vi = vi or {}
+        search_title = vi.get("title", query)
+        os_season = vi.get("season")
+        os_episode = vi.get("episode")
 
         # Primary — OpenSubtitles REST API
         api_key = self.config.get("api_key", "")
         if api_key:
             try:
-                os_results, total_pages = search_opensubtitles(query, langs, api_key)
+                os_results, total_pages = search_opensubtitles(
+                    search_title, langs, api_key,
+                    season_number=os_season,
+                    episode_number=os_episode,
+                )
                 self._os_total_pages = total_pages
                 results.extend(os_results)
             except requests.HTTPError as exc:
@@ -401,7 +440,13 @@ class SubDownerWindow(Adw.ApplicationWindow):
 
         # Secondary — gestdown direct API (works for show-name queries)
         try:
-            results.extend(search_gestdown(query, langs))
+            results.extend(
+                search_gestdown(
+                    search_title, langs,
+                    season=os_season,
+                    episode=os_episode,
+                )
+            )
         except Exception:
             log.warning("gestdown direct search failed", exc_info=True)
 
@@ -580,27 +625,46 @@ class SubDownerWindow(Adw.ApplicationWindow):
         self.config["languages"] = langs
         save_config(self.config)
 
+        # Parse query for structured metadata.
+        if self._video_info is None:
+            info = parse_video_filename(query)
+            if info.get("title"):
+                self._video_info = info
+
+        vi = self._video_info
+        self._video_info = None   # consumed
+
         self._set_busy(True)
         self._clear_results()
         threading.Thread(
-            target=self._lucky_worker, args=(query, langs), daemon=True
+            target=self._lucky_worker, args=(query, langs, vi), daemon=True
         ).start()
 
-    def _lucky_worker(self, query: str, langs: list[str]):
+    def _lucky_worker(self, query: str, langs: list[str], vi: dict | None):
         """Pick the highest-scored result across both backends, download it."""
         try:
             all_results: list[SubResult] = []
+            vi = vi or {}
+            search_title = vi.get("title", query)
+            szn = vi.get("season")
+            ep = vi.get("episode")
 
             api_key = self.config.get("api_key", "")
             if api_key:
                 try:
-                    os_res, _ = search_opensubtitles(query, langs, api_key)
+                    os_res, _ = search_opensubtitles(
+                        search_title, langs, api_key,
+                        season_number=szn,
+                        episode_number=ep,
+                    )
                     all_results.extend(os_res)
                 except Exception:
                     pass
 
             try:
-                all_results.extend(search_gestdown(query, langs))
+                all_results.extend(
+                    search_gestdown(search_title, langs, season=szn, episode=ep)
+                )
             except Exception:
                 pass
 

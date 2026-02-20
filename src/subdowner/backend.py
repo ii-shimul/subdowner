@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import logging
 import threading
+from typing import TypedDict
 
 import chardet
 import requests
+from guessit import guessit
 
 from .config import (
     API_BASE,
@@ -29,6 +31,60 @@ _LANG_A2_TO_A3: dict[str, str] = {
     "da": "dan", "fi": "fin", "el": "gre", "cs": "cze", "ro": "rum",
     "hu": "hun",
 }
+
+
+# ---------------------------------------------------------------------------
+# Video filename parsing
+# ---------------------------------------------------------------------------
+
+
+class VideoInfo(TypedDict, total=False):
+    """Structured metadata extracted from a video filename."""
+    title: str
+    season: int
+    episode: int
+    year: int
+    type: str          # "movie" or "episode"
+    source: str        # e.g. "BluRay", "WEB-DL"
+    release_group: str
+
+
+def parse_video_filename(filename: str) -> VideoInfo:
+    """Parse a video filename into structured metadata using *guessit*.
+
+    Returns a dict with ``title`` (always present) and optional keys
+    ``season``, ``episode``, ``year``, ``type``, ``source``, and
+    ``release_group``.
+    """
+    guess = guessit(filename)
+    info: VideoInfo = {}
+
+    title = guess.get("title", "")
+    if title:
+        info["title"] = str(title)
+
+    for key, gkey in [
+        ("season", "season"),
+        ("episode", "episode"),
+        ("year", "year"),
+    ]:
+        val = guess.get(gkey)
+        if isinstance(val, int):
+            info[key] = val  # type: ignore[literal-required]
+
+    vtype = guess.get("type")
+    if vtype:
+        info["type"] = str(vtype)
+
+    source = guess.get("source")
+    if source:
+        info["source"] = str(source)
+
+    rg = guess.get("release_group")
+    if rg:
+        info["release_group"] = str(rg)
+
+    return info
 
 
 # ---------------------------------------------------------------------------
@@ -56,19 +112,30 @@ def search_opensubtitles(
     lang_codes: list[str],
     api_key: str,
     page: int = 1,
+    *,
+    season_number: int | None = None,
+    episode_number: int | None = None,
 ) -> tuple[list[SubResult], int]:
     """Full-text search via the OpenSubtitles v1 REST API.
 
     Returns ``(results, total_pages)`` so the caller can paginate.
+    When *season_number* / *episode_number* are given the results are
+    scoped to that specific season or episode.
     """
+    params: dict[str, str | int] = {
+        "query": query,
+        "languages": ",".join(lang_codes),
+        "page": page,
+    }
+    if season_number is not None:
+        params["season_number"] = season_number
+    if episode_number is not None:
+        params["episode_number"] = episode_number
+
     resp = requests.get(
         f"{API_BASE}/subtitles",
         headers={"Api-Key": api_key, "User-Agent": APP_NAME},
-        params={
-            "query": query,
-            "languages": ",".join(lang_codes),
-            "page": page,
-        },
+        params=params,
         timeout=20,
     )
     resp.raise_for_status()
@@ -108,14 +175,16 @@ _GESTDOWN_API = "https://api.gestdown.info"
 def search_gestdown(
     query: str,
     lang_codes: list[str],
+    *,
+    season: int | None = None,
+    episode: int | None = None,
 ) -> list[SubResult]:
     """Search the Gestdown REST API for TV-show subtitles by name.
 
-    Searches for *shows* by name and returns subtitles across all
-    seasons—ideal for free-text queries like ``"Breaking Bad"``.
-
-    Season queries are parallelised so the total latency is roughly one
-    round-trip instead of ``N × seasons``.
+    Searches for *shows* by name and returns subtitles.  When *season*
+    is given, only that season is fetched; otherwise all seasons are
+    queried in parallel.  When *episode* is also given, results are
+    filtered to that episode number.
     """
     results: list[SubResult] = []
 
@@ -151,36 +220,42 @@ def search_gestdown(
     show = shows[0]
     show_name = show.get("name", query)
     show_id = show.get("id")
-    seasons: list[int] = show.get("seasons", [])
+    all_seasons: list[int] = show.get("seasons", [])
 
-    if not show_id or not seasons:
+    if not show_id or not all_seasons:
         return results
+
+    # Narrow to a single season when the caller knows which one.
+    fetch_seasons = [season] if season and season in all_seasons else all_seasons
 
     lock = threading.Lock()
 
-    def _fetch_season(season: int, a3: str) -> None:
+    def _fetch_season(szn: int, a3: str) -> None:
         """Fetch subtitles for one season/language pair (daemon thread)."""
         try:
             resp = requests.get(
-                f"{_GESTDOWN_API}/shows/{show_id}/{season}/{a3}",
+                f"{_GESTDOWN_API}/shows/{show_id}/{szn}/{a3}",
                 headers={"Accept": "application/json"},
                 timeout=10,
             )
             if resp.status_code != 200:
                 return
-            episodes = resp.json().get("episodes", [])
+            episodes_data = resp.json().get("episodes", [])
         except Exception:
             return
 
         batch: list[SubResult] = []
-        for ep in episodes:
+        for ep in episodes_data:
             ep_num = ep.get("number", 0)
-            ep_season = ep.get("season", season)
+            ep_season = ep.get("season", szn)
             ep_title = ep.get("title", "")
 
             for sub in ep.get("subtitles", []):
                 dl_uri = sub.get("downloadUri", "")
                 if not dl_uri:
+                    continue
+                # Skip episodes that don't match when a specific one is requested.
+                if episode is not None and ep_num != episode:
                     continue
                 dl_url = (
                     f"{_GESTDOWN_API}{dl_uri}"
@@ -207,10 +282,10 @@ def search_gestdown(
 
     # Launch all season/language fetches in parallel.
     threads: list[threading.Thread] = []
-    for season in seasons:
+    for szn in fetch_seasons:
         for a3 in lang_a3:
             t = threading.Thread(
-                target=_fetch_season, args=(season, a3), daemon=True
+                target=_fetch_season, args=(szn, a3), daemon=True
             )
             t.start()
             threads.append(t)

@@ -13,6 +13,7 @@ depends=(
     'libadwaita'
     'python-requests'
     'python-chardet'
+    'python-guessit'
 )
 makedepends=(
     'python-build'
