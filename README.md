@@ -12,17 +12,16 @@ A GTK4 / Libadwaita desktop app for searching and downloading subtitles.
 SubDowner searches for subtitles using two backends simultaneously:
 
 1. **OpenSubtitles REST API** — covers movies and series by plain-text query (requires a free API key from [opensubtitles.com/consumers](https://www.opensubtitles.com/consumers)).
-2. **subliminal** — adds results from Gestdown, TVsubtitles, Podnapisi, and optionally OpenSubtitles.com/Addic7ed with account credentials. Includes scoring, video refiners, and parallel provider queries.
+2. **Gestdown API** — searches TV shows by name across all seasons, returning subtitles from the Gestdown database.
 
 Results from both are merged, deduplicated, sorted by score, and shown in a clean Adwaita list.
 
 ## Features
 
-- **Hybrid search** across OpenSubtitles REST API + subliminal providers
+- **Dual-backend search** across OpenSubtitles REST API + Gestdown API
 - **Multi-language** search — pick any combination of 21 languages
-- **Scoring & match details** from subliminal's refiners (TMDB, OMDb)
 - **"I'm Feeling Lucky"** — one click to download the best match
-- **Drag & drop** a video file for hash-based matching
+- **Drag & drop** a video file to auto-fill the search query
 - **Pagination** — load more OpenSubtitles results page by page
 - **Search history** with recent queries popover
 - **Configurable download directory**, hearing-impaired filter, encoding normalization
@@ -87,14 +86,13 @@ python -m subdowner
 
 Settings are stored in `~/.config/subdowner/config.json`. You can also edit them from the in-app Preferences window (☰ → Preferences…).
 
-| Key                | Description                                    |
-| ------------------ | ---------------------------------------------- |
-| `api_key`          | OpenSubtitles REST API key                     |
-| `languages`        | List of ISO 639-1 codes (e.g. `["en", "fr"]`)  |
-| `download_dir`     | Where subtitle files are saved                 |
-| `exclude_hi`       | Hide hearing-impaired subtitles                |
-| `provider_configs` | Credentials for OpenSubtitles.com and Addic7ed |
-| `search_history`   | Recent search queries (max 20)                 |
+| Key              | Description                                   |
+| ---------------- | --------------------------------------------- |
+| `api_key`        | OpenSubtitles REST API key                    |
+| `languages`      | List of ISO 639-1 codes (e.g. `["en", "fr"]`) |
+| `download_dir`   | Where subtitle files are saved                |
+| `exclude_hi`     | Hide hearing-impaired subtitles               |
+| `search_history` | Recent search queries (max 20)                |
 
 ## Desktop integration
 
@@ -145,7 +143,7 @@ subdowner/
 
 All network I/O (search, download) runs in **daemon threads**. Results are pushed to the GTK main loop via `GLib.idle_add()`, which guarantees UI updates happen on the main thread. A generation counter (`_search_gen`) prevents stale results from overwriting newer ones.
 
-The backend module has zero GTK dependencies — it only deals with `requests`, `subliminal`, and the `SubResult` dataclass. This makes it testable independently of the UI.
+The backend module has zero GTK dependencies — it only deals with `requests` and the `SubResult` dataclass. This makes it testable independently of the UI.
 
 ## License
 

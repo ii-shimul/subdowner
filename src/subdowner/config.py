@@ -20,9 +20,6 @@ CONFIG_DIR = (
 CONFIG_FILE = CONFIG_DIR / "config.json"
 DOWNLOAD_DIR = Path.home() / "Downloads"
 
-# Subliminal providers that don't need credentials.
-FREE_PROVIDERS = ["gestdown", "tvsubtitles", "podnapisi"]
-
 # Supported languages as (code, label) pairs.
 LANGUAGES = [
     ("en", "English"),
@@ -67,7 +64,6 @@ log = logging.getLogger(__name__)
 _DEFAULTS: dict = {
     "languages": ["en"],
     "api_key": "",
-    "provider_configs": {},
     "download_dir": str(DOWNLOAD_DIR),
     "exclude_hi": False,
     "search_history": [],

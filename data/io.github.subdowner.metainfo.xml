@@ -9,13 +9,13 @@
   <description>
     <p>
       SubDowner is a modern GTK4/Libadwaita application that searches for
-      subtitles using the OpenSubtitles REST API and subliminal library.
-      Results from multiple providers are merged, scored, and deduplicated
+      subtitles using the OpenSubtitles REST API and Gestdown API.
+      Results from both backends are merged and deduplicated
       so you always get the best match.
     </p>
     <p>Features include:</p>
     <ul>
-      <li>Hybrid search across OpenSubtitles and subliminal providers</li>
+      <li>Dual-backend search across OpenSubtitles and Gestdown</li>
       <li>Multi-language support with 21 languages</li>
       <li>Drag-and-drop video files for hash-based matching</li>
       <li>"I'm Feeling Lucky" one-click download</li>

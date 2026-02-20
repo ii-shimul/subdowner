@@ -41,5 +41,4 @@ class SubDownerApp(Adw.Application):
 def main():
     """CLI entry point."""
     logging.basicConfig(level=logging.WARNING)
-    logging.getLogger("subliminal").setLevel(logging.CRITICAL)
     SubDownerApp().run()

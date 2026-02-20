@@ -1,4 +1,4 @@
-"""Search and download backends — OpenSubtitles REST API + subliminal.
+"""Search and download backends — OpenSubtitles REST API + Gestdown.
 
 All network work happens on caller-supplied threads; nothing here
 touches GTK.
@@ -7,56 +7,28 @@ touches GTK.
 from __future__ import annotations
 
 import logging
-import os
 import threading
-from pathlib import Path
-from typing import Any
 
+import chardet
 import requests
 
 from .config import (
     API_BASE,
     APP_NAME,
-    CONFIG_DIR,
-    DOWNLOAD_DIR,
-    FREE_PROVIDERS,
 )
 from .models import SubResult
 
 log = logging.getLogger(__name__)
 
-import chardet
-
-import subliminal
-from babelfish import Language
-from subliminal import (
-    download_subtitles as subliminal_download,
-    list_subtitles as subliminal_list,
-    region,
-)
-from subliminal.score import compute_score
-from subliminal.video import Video
-
-# Per-provider timeout in seconds. Providers that don't respond in time
-# are silently skipped so one dead provider can't block the whole search.
-_PROVIDER_TIMEOUT = 10
-
-_subliminal_cache_configured = False
-
-
-def _ensure_subliminal_cache():
-    """Configure subliminal's dogpile cache lazily (on first use)."""
-    global _subliminal_cache_configured
-    if _subliminal_cache_configured:
-        return
-    _CACHE_FILE = CONFIG_DIR / "subliminal_cache.dbm"
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    region.configure(
-        "dogpile.cache.dbm",
-        arguments={"filename": str(_CACHE_FILE)},
-        replace_existing_backend=True,
-    )
-    _subliminal_cache_configured = True
+# ISO 639-1 (alpha-2) → ISO 639-2/B (alpha-3) mapping for languages
+# supported by this application.  Used by the Gestdown API.
+_LANG_A2_TO_A3: dict[str, str] = {
+    "en": "eng", "es": "spa", "fr": "fre", "de": "ger", "pt": "por",
+    "it": "ita", "nl": "dut", "pl": "pol", "ru": "rus", "ar": "ara",
+    "zh": "chi", "ja": "jpn", "ko": "kor", "tr": "tur", "sv": "swe",
+    "da": "dan", "fi": "fin", "el": "gre", "cs": "cze", "ro": "rum",
+    "hu": "hun",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +99,7 @@ def search_opensubtitles(
 
 
 # ---------------------------------------------------------------------------
-# Gestdown direct API (show-level subtitle search, no subliminal needed)
+# Gestdown direct API (show-level subtitle search)
 # ---------------------------------------------------------------------------
 
 _GESTDOWN_API = "https://api.gestdown.info"
@@ -139,8 +111,7 @@ def search_gestdown(
 ) -> list[SubResult]:
     """Search the Gestdown REST API for TV-show subtitles by name.
 
-    Unlike the subliminal provider (which needs a parsed Episode object),
-    this searches for *shows* by name and returns subtitles across all
+    Searches for *shows* by name and returns subtitles across all
     seasons—ideal for free-text queries like ``"Breaking Bad"``.
 
     Season queries are parallelised so the total latency is roughly one
@@ -169,12 +140,10 @@ def search_gestdown(
     a3_to_a2: dict[str, str] = {}
     lang_a3: list[str] = []
     for code in lang_codes:
-        try:
-            a3 = Language.fromalpha2(code).alpha3
+        a3 = _LANG_A2_TO_A3.get(code)
+        if a3:
             lang_a3.append(a3)
             a3_to_a2[a3] = code
-        except Exception:
-            pass
     if not lang_a3:
         return results
 
@@ -262,109 +231,6 @@ def download_gestdown(url: str) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# subliminal (multi-provider, scored)
-# ---------------------------------------------------------------------------
-
-def search_subliminal(
-    query: str,
-    lang_codes: list[str],
-    provider_configs: dict | None = None,
-    video_path: str | None = None,
-) -> list[SubResult]:
-    """Search subliminal providers with scoring and optional refiners.
-
-    Each provider is queried in its own thread with a timeout so that
-    one unresponsive provider can't block the entire search.
-
-    When *video_path* points to an existing file, ``scan_video()`` is
-    used for hash-based matching instead of ``Video.fromname()``.
-    """
-    _ensure_subliminal_cache()
-
-    try:
-        if video_path and os.path.isfile(video_path):
-            video = subliminal.scan_video(video_path)
-        else:
-            video = Video.fromname(query)
-
-        languages = {Language.fromalpha2(c) for c in lang_codes}
-
-        # Build the provider list.
-        providers = list(FREE_PROVIDERS)
-        configs: dict = {}
-        if provider_configs:
-            for key in ("opensubtitlescom", "addic7ed"):
-                cfg = provider_configs.get(key, {})
-                if cfg.get("username") and cfg.get("password"):
-                    providers.append(key)
-                    configs[key] = cfg
-
-        # Query each provider in its own daemon thread with a timeout.
-        all_subs: list = []
-        lock = threading.Lock()
-        done_event = threading.Event()
-        pending = [len(providers)]  # mutable counter
-
-        def _query_provider(provider: str) -> None:
-            """Run a single provider search (daemon thread)."""
-            try:
-                subs = subliminal_list(
-                    {video},
-                    languages,
-                    providers=[provider],
-                    provider_configs=configs or None,
-                )
-                with lock:
-                    all_subs.extend(subs.get(video, []))
-            except Exception:
-                log.debug("provider %s failed", provider, exc_info=True)
-            finally:
-                with lock:
-                    pending[0] -= 1
-                    if pending[0] <= 0:
-                        done_event.set()
-
-        for p in providers:
-            threading.Thread(
-                target=_query_provider, args=(p,), daemon=True
-            ).start()
-
-        # Wait for all providers or timeout — whichever comes first.
-        done_event.wait(timeout=_PROVIDER_TIMEOUT)
-
-        results: list[SubResult] = []
-        for sub in all_subs:
-            try:
-                sub_matches = sorted(sub.get_matches(video))
-                sub_score = compute_score(sub, video)
-            except Exception:
-                sub_matches, sub_score = [], 0
-
-            info = getattr(sub, "info", "") or str(sub.subtitle_id)
-            release = (
-                getattr(sub, "release_info", None)
-                or getattr(sub, "movie_release_name", None)
-                or ""
-            )
-            results.append(
-                SubResult(
-                    title=info,
-                    language=str(sub.language),
-                    provider=sub.provider_name,
-                    release=release,
-                    hearing_impaired=getattr(sub, "hearing_impaired", False) or False,
-                    score=sub_score,
-                    matches=sub_matches,
-                    subliminal_sub=sub,
-                )
-            )
-        return results
-    except Exception:
-        log.warning("subliminal search failed", exc_info=True)
-        return []
-
-
-# ---------------------------------------------------------------------------
 # Download helpers
 # ---------------------------------------------------------------------------
 
@@ -393,25 +259,3 @@ def download_opensubtitles(file_id: int, api_key: str) -> bytes:
     sub_resp = requests.get(link, timeout=30)
     sub_resp.raise_for_status()
     return normalize_encoding(sub_resp.content)
-
-
-def download_subliminal_sub(
-    sub: Any,
-    provider_configs: dict | None = None,
-) -> bytes:
-    """Download a subliminal ``Subtitle`` object and return its content."""
-    providers = list(FREE_PROVIDERS)
-    if provider_configs:
-        for key in ("opensubtitlescom", "addic7ed"):
-            if provider_configs.get(key):
-                providers.append(key)
-
-    subliminal_download(
-        [sub],
-        providers=providers,
-        provider_configs=provider_configs or None,
-    )
-    content = getattr(sub, "content", None)
-    if not content:
-        raise RuntimeError("Provider returned empty content.")
-    return normalize_encoding(content)

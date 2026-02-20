@@ -18,10 +18,8 @@ log = logging.getLogger(__name__)
 from .backend import (
     download_gestdown,
     download_opensubtitles,
-    download_subliminal_sub,
     search_gestdown,
     search_opensubtitles,
-    search_subliminal,
 )
 from .config import (
     APP_NAME,
@@ -407,18 +405,6 @@ class SubDownerWindow(Adw.ApplicationWindow):
         except Exception:
             log.warning("gestdown direct search failed", exc_info=True)
 
-        # Tertiary — subliminal providers (works best with filename queries)
-        try:
-            prov_cfgs = self.config.get("provider_configs", {})
-            results.extend(
-                search_subliminal(
-                    query, langs, prov_cfgs or None,
-                    video_path=self._video_path,
-                )
-            )
-        except Exception:
-            log.warning("subliminal search failed", exc_info=True)
-
         # Sort, deduplicate, filter
         results.sort(key=lambda r: r.score, reverse=True)
 
@@ -618,12 +604,6 @@ class SubDownerWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
 
-            try:
-                prov = self.config.get("provider_configs", {})
-                all_results.extend(search_subliminal(query, langs, prov or None))
-            except Exception:
-                pass
-
             if not all_results:
                 GLib.idle_add(self._search_failed, "No subtitles found.")
                 return
@@ -672,15 +652,6 @@ class SubDownerWindow(Adw.ApplicationWindow):
                 dest = dl_dir / f"{safe}.srt"
                 dest.write_bytes(data)
 
-            elif result.subliminal_sub is not None:
-                prov = self.config.get("provider_configs", {})
-                data = download_subliminal_sub(result.subliminal_sub, prov)
-                safe = "".join(
-                    c if c.isalnum() or c in " .-_()" else "_"
-                    for c in result.title
-                ) or "subtitle"
-                dest = dl_dir / f"{safe}.srt"
-                dest.write_bytes(data)
             else:
                 raise RuntimeError("No download method available.")
 
@@ -742,8 +713,8 @@ class SubDownerWindow(Adw.ApplicationWindow):
             website="https://github.com/ii-shimul/subdowner",
             comments=(
                 "Search and download subtitles for movies and TV series.\n\n"
-                "Backends: OpenSubtitles REST API + subliminal.\n"
-                "Features: multi-language, scoring, drag-and-drop, "
+                "Backends: OpenSubtitles REST API + Gestdown.\n"
+                "Features: multi-language, drag-and-drop, "
                 "keyboard shortcuts, encoding normalization."
             ),
             license_type=Gtk.License.MIT_X11,
