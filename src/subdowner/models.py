@@ -21,5 +21,8 @@ class SubResult:
     # OpenSubtitles REST API
     os_file_id: int | None = None
 
+    # Direct download URL (e.g. gestdown API)
+    download_url: str | None = None
+
     # subliminal sub object (kept opaque so the module stays backend-agnostic)
     subliminal_sub: object | None = field(default=None, repr=False)

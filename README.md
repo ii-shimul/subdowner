@@ -70,7 +70,7 @@ python3 -m venv --system-site-packages venv
 source venv/bin/activate
 
 # Install in editable mode
-pip install -e '.[full]'
+pip install -e .
 ```
 
 ### Run

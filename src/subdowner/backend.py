@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -24,32 +25,21 @@ from .models import SubResult
 
 log = logging.getLogger(__name__)
 
-# Optional: chardet for encoding normalisation.
-try:
-    import chardet
-except ImportError:
-    chardet = None  # type: ignore[assignment]
+import chardet
 
-# Optional: subliminal for the secondary search backend.
-try:
-    import subliminal
-    from babelfish import Language
-    from subliminal import (
-        download_subtitles as subliminal_download,
-        list_subtitles as subliminal_list,
-        region,
-    )
-    from subliminal.score import compute_score
-    from subliminal.video import Video
+import subliminal
+from babelfish import Language
+from subliminal import (
+    download_subtitles as subliminal_download,
+    list_subtitles as subliminal_list,
+    region,
+)
+from subliminal.score import compute_score
+from subliminal.video import Video
 
-    HAS_SUBLIMINAL = True
-except ImportError:
-    HAS_SUBLIMINAL = False
-
-try:
-    from subliminal.core import AsyncProviderPool
-except ImportError:
-    AsyncProviderPool = None
+# Per-provider timeout in seconds. Providers that don't respond in time
+# are silently skipped so one dead provider can't block the whole search.
+_PROVIDER_TIMEOUT = 10
 
 _subliminal_cache_configured = False
 
@@ -57,7 +47,7 @@ _subliminal_cache_configured = False
 def _ensure_subliminal_cache():
     """Configure subliminal's dogpile cache lazily (on first use)."""
     global _subliminal_cache_configured
-    if _subliminal_cache_configured or not HAS_SUBLIMINAL:
+    if _subliminal_cache_configured:
         return
     _CACHE_FILE = CONFIG_DIR / "subliminal_cache.dbm"
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -75,8 +65,6 @@ def _ensure_subliminal_cache():
 
 def normalize_encoding(data: bytes) -> bytes:
     """Detect charset and re-encode to UTF-8 when possible."""
-    if chardet is None:
-        return data
     try:
         detected = chardet.detect(data)
         encoding = (detected.get("encoding") or "utf-8").lower()
@@ -139,6 +127,141 @@ def search_opensubtitles(
 
 
 # ---------------------------------------------------------------------------
+# Gestdown direct API (show-level subtitle search, no subliminal needed)
+# ---------------------------------------------------------------------------
+
+_GESTDOWN_API = "https://api.gestdown.info"
+
+
+def search_gestdown(
+    query: str,
+    lang_codes: list[str],
+) -> list[SubResult]:
+    """Search the Gestdown REST API for TV-show subtitles by name.
+
+    Unlike the subliminal provider (which needs a parsed Episode object),
+    this searches for *shows* by name and returns subtitles across all
+    seasons—ideal for free-text queries like ``"Breaking Bad"``.
+
+    Season queries are parallelised so the total latency is roughly one
+    round-trip instead of ``N × seasons``.
+    """
+    results: list[SubResult] = []
+
+    # Step 1: Find matching shows.
+    try:
+        r = requests.get(
+            f"{_GESTDOWN_API}/shows/search/{requests.utils.quote(query)}",
+            headers={"Accept": "application/json"},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return results
+        shows = r.json().get("shows", [])
+    except Exception:
+        log.debug("gestdown show search failed", exc_info=True)
+        return results
+
+    if not shows:
+        return results
+
+    # Map alpha-2 → alpha-3 (ISO 639-2/B) for the gestdown API.
+    a3_to_a2: dict[str, str] = {}
+    lang_a3: list[str] = []
+    for code in lang_codes:
+        try:
+            a3 = Language.fromalpha2(code).alpha3
+            lang_a3.append(a3)
+            a3_to_a2[a3] = code
+        except Exception:
+            pass
+    if not lang_a3:
+        return results
+
+    # Step 2: For the top-matching show, fetch subtitles in parallel.
+    show = shows[0]
+    show_name = show.get("name", query)
+    show_id = show.get("id")
+    seasons: list[int] = show.get("seasons", [])
+
+    if not show_id or not seasons:
+        return results
+
+    lock = threading.Lock()
+
+    def _fetch_season(season: int, a3: str) -> None:
+        """Fetch subtitles for one season/language pair (daemon thread)."""
+        try:
+            resp = requests.get(
+                f"{_GESTDOWN_API}/shows/{show_id}/{season}/{a3}",
+                headers={"Accept": "application/json"},
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                return
+            episodes = resp.json().get("episodes", [])
+        except Exception:
+            return
+
+        batch: list[SubResult] = []
+        for ep in episodes:
+            ep_num = ep.get("number", 0)
+            ep_season = ep.get("season", season)
+            ep_title = ep.get("title", "")
+
+            for sub in ep.get("subtitles", []):
+                dl_uri = sub.get("downloadUri", "")
+                if not dl_uri:
+                    continue
+                dl_url = (
+                    f"{_GESTDOWN_API}{dl_uri}"
+                    if dl_uri.startswith("/")
+                    else dl_uri
+                )
+                title = (
+                    f"{show_name} S{ep_season:02d}E{ep_num:02d}"
+                    f"{' - ' + ep_title if ep_title else ''}"
+                )
+                batch.append(
+                    SubResult(
+                        title=title,
+                        language=a3_to_a2.get(a3, "en"),
+                        provider="Gestdown",
+                        release=sub.get("version", ""),
+                        hearing_impaired=sub.get("hearingImpaired", False),
+                        score=0,
+                        download_url=dl_url,
+                    )
+                )
+        with lock:
+            results.extend(batch)
+
+    # Launch all season/language fetches in parallel.
+    threads: list[threading.Thread] = []
+    for season in seasons:
+        for a3 in lang_a3:
+            t = threading.Thread(
+                target=_fetch_season, args=(season, a3), daemon=True
+            )
+            t.start()
+            threads.append(t)
+
+    for t in threads:
+        t.join(timeout=15)
+
+    return results
+
+
+def download_gestdown(url: str) -> bytes:
+    """Download a subtitle file from a Gestdown direct URL."""
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+    if not r.content:
+        raise RuntimeError("Gestdown returned empty content.")
+    return normalize_encoding(r.content)
+
+
+# ---------------------------------------------------------------------------
 # subliminal (multi-provider, scored)
 # ---------------------------------------------------------------------------
 
@@ -150,12 +273,12 @@ def search_subliminal(
 ) -> list[SubResult]:
     """Search subliminal providers with scoring and optional refiners.
 
+    Each provider is queried in its own thread with a timeout so that
+    one unresponsive provider can't block the entire search.
+
     When *video_path* points to an existing file, ``scan_video()`` is
     used for hash-based matching instead of ``Video.fromname()``.
     """
-    if not HAS_SUBLIMINAL:
-        return []
-
     _ensure_subliminal_cache()
 
     try:
@@ -176,30 +299,41 @@ def search_subliminal(
                     providers.append(key)
                     configs[key] = cfg
 
-        pool_kwargs: dict = {}
-        if AsyncProviderPool is not None:
-            pool_kwargs["pool_class"] = AsyncProviderPool
+        # Query each provider in its own daemon thread with a timeout.
+        all_subs: list = []
+        lock = threading.Lock()
+        done_event = threading.Event()
+        pending = [len(providers)]  # mutable counter
 
-        # Try with refiners first; fall back for older subliminal.
-        try:
-            subs_dict = subliminal_list(
-                {video},
-                languages,
-                providers=providers,
-                provider_configs=configs or None,
-                refiners=["tmdb", "omdb"],
-                **pool_kwargs,
-            )
-        except TypeError:
-            subs_dict = subliminal_list(
-                {video},
-                languages,
-                providers=providers,
-                provider_configs=configs or None,
-            )
+        def _query_provider(provider: str) -> None:
+            """Run a single provider search (daemon thread)."""
+            try:
+                subs = subliminal_list(
+                    {video},
+                    languages,
+                    providers=[provider],
+                    provider_configs=configs or None,
+                )
+                with lock:
+                    all_subs.extend(subs.get(video, []))
+            except Exception:
+                log.debug("provider %s failed", provider, exc_info=True)
+            finally:
+                with lock:
+                    pending[0] -= 1
+                    if pending[0] <= 0:
+                        done_event.set()
+
+        for p in providers:
+            threading.Thread(
+                target=_query_provider, args=(p,), daemon=True
+            ).start()
+
+        # Wait for all providers or timeout — whichever comes first.
+        done_event.wait(timeout=_PROVIDER_TIMEOUT)
 
         results: list[SubResult] = []
-        for sub in subs_dict.get(video, []):
+        for sub in all_subs:
             try:
                 sub_matches = sorted(sub.get_matches(video))
                 sub_score = compute_score(sub, video)

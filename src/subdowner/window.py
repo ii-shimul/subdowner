@@ -16,9 +16,10 @@ from gi.repository import Adw, Gdk, GLib, Gio, Gtk  # noqa: E402
 log = logging.getLogger(__name__)
 
 from .backend import (
-    HAS_SUBLIMINAL,
+    download_gestdown,
     download_opensubtitles,
     download_subliminal_sub,
+    search_gestdown,
     search_opensubtitles,
     search_subliminal,
 )
@@ -400,7 +401,13 @@ class SubDownerWindow(Adw.ApplicationWindow):
             except Exception as exc:
                 errors.append(f"OpenSubtitles: {exc}")
 
-        # Secondary — subliminal providers
+        # Secondary — gestdown direct API (works for show-name queries)
+        try:
+            results.extend(search_gestdown(query, langs))
+        except Exception:
+            log.warning("gestdown direct search failed", exc_info=True)
+
+        # Tertiary — subliminal providers (works best with filename queries)
         try:
             prov_cfgs = self.config.get("provider_configs", {})
             results.extend(
@@ -607,6 +614,11 @@ class SubDownerWindow(Adw.ApplicationWindow):
                     pass
 
             try:
+                all_results.extend(search_gestdown(query, langs))
+            except Exception:
+                pass
+
+            try:
                 prov = self.config.get("provider_configs", {})
                 all_results.extend(search_subliminal(query, langs, prov or None))
             except Exception:
@@ -651,7 +663,16 @@ class SubDownerWindow(Adw.ApplicationWindow):
                 dest = dl_dir / result.title
                 dest.write_bytes(data)
 
-            elif result.subliminal_sub is not None and HAS_SUBLIMINAL:
+            elif result.download_url is not None:
+                data = download_gestdown(result.download_url)
+                safe = "".join(
+                    c if c.isalnum() or c in " .-_()" else "_"
+                    for c in result.title
+                ) or "subtitle"
+                dest = dl_dir / f"{safe}.srt"
+                dest.write_bytes(data)
+
+            elif result.subliminal_sub is not None:
                 prov = self.config.get("provider_configs", {})
                 data = download_subliminal_sub(result.subliminal_sub, prov)
                 safe = "".join(
